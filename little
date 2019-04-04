@@ -1,0 +1,73 @@
+#!/usr/bin/env php
+<?php
+require_once dirname(__FILE__) . '/vendor/autoload.php';
+use EasySwoole\Component\Pool\PoolManager;
+use App\Utility\Pool\RedisPool;
+use App\Utility\TaskData;
+
+class LittleServer
+{
+    public static function onWorkerStart($server, $workerId)
+    {
+        //初始化Mysql,redis链接
+        if ($server->taskworker === false) {
+            $obj = PoolManager::getInstance()->getPool(RedisPool::class);
+            $ret = $obj->preLoad(1);
+        }
+    }
+
+    public static function onConnect($server, $fd, $reactorId)
+    {
+
+    }
+
+    public static function onReceive($server, $fd, $reactorId, string $data)
+    {
+        $arr = json_decode($data, true);
+        if (!is_array($arr) || !isset($arr['data']) || !isset($arr['action'])) {
+            $server->send($fd, '');
+        }
+
+        $task = new TaskData();
+        $task->setData($arr['data']);
+        $task->setAction($arr['action']);
+
+        $taskId = $server->task($task);
+        $server->send($fd, $taskId);
+    }
+
+    public static function onTask($serv, Swoole\Server\Task $task)
+    {
+        $data = $task->data;
+        $params = $data->getData();
+        $action = $data->getAction();
+        $actions = explode('/', $action);
+        $controller = empty($actions[0]) ? 'index' : $actions[0];
+        $controller = ucfirst($controller);
+        $method = isset($actions[1]) ? $actions[1] : 'index';
+
+        $class = '\\App\\Action\\'.$controller;
+        if(class_exists($class)){
+            $rf = new \ReflectionClass($class);
+            if($rf->hasMethod($method)){
+                $instance = $rf->newInstance();
+                $instance->$method($params);
+            }
+        }
+
+    }
+
+}
+
+
+$serv = new Swoole\Server('0.0.0.0', 9501);
+$serv->set([
+    'worker_num'      => 1,
+    'task_worker_num' => 1,
+    'task_enable_coroutine' => true
+]);
+$serv->on("WorkerStart","LittleServer::onWorkerStart");
+$serv->on("Connect","LittleServer::onConnect");
+$serv->on("Receive","LittleServer::onReceive");
+$serv->on("Task", "LittleServer::onTask");
+$serv->start();
